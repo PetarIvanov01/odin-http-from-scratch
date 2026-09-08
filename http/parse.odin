@@ -2,17 +2,21 @@ package http
 
 import "core:fmt"
 
-parse_http_req :: proc(buf: []u8) -> (Request, Parse_Error) {
+parse_http_req_head :: proc(
+	buf: []u8,
+) -> (
+	request: Request,
+	body_start_idx: int,
+	err: Parse_Error,
+) {
 
 	l := len(buf)
 
 	// fmt.printfln("Original buffer: %v\n", string(buf))
 
-	request: Request
-
 	request_line_idx := -1
 
-	if l < 2 {return request, .Malformed}
+	if l < 2 {return request, 0, .Malformed}
 
 	// Parse the request line
 	for i in 0 ..< l - 1 {
@@ -21,7 +25,7 @@ parse_http_req :: proc(buf: []u8) -> (Request, Parse_Error) {
 			method, path, version, err := _parse_req_line(request_line_bytes)
 
 			if err != .None {
-				return request, err
+				return request, 0, err
 			}
 
 			request.method = method
@@ -34,7 +38,7 @@ parse_http_req :: proc(buf: []u8) -> (Request, Parse_Error) {
 	}
 
 	if request_line_idx == -1 {
-		return request, .Request_Line_Not_Found
+		return request, 0, .Request_Line_Not_Found
 	}
 
 	fmt.printfln(
@@ -46,7 +50,7 @@ parse_http_req :: proc(buf: []u8) -> (Request, Parse_Error) {
 
 	// Parse the headers
 	request_headers_start_idx := request_line_idx + 2
-	body_start_idx := -1
+	body_start_idx = -1
 
 	for i in request_headers_start_idx ..< l - 3 {
 		if buf[i] == '\r' && buf[i + 1] == '\n' && buf[i + 2] == '\r' && buf[i + 3] == '\n' {
@@ -54,7 +58,7 @@ parse_http_req :: proc(buf: []u8) -> (Request, Parse_Error) {
 			headers, err := _parse_req_headers(request_headers_bytes)
 
 			if err != .None {
-				return request, err
+				return request, 0, err
 			}
 
 			request.headers = headers
@@ -65,17 +69,21 @@ parse_http_req :: proc(buf: []u8) -> (Request, Parse_Error) {
 	}
 
 	if body_start_idx == -1 {
-		return request, .Request_Headers_Not_Found
+		return request, 0, .Request_Headers_Not_Found
 	}
 
 	_print_headers(request.headers)
 
-	request.body = buf[body_start_idx:]
-
-	return request, .None
+	return request, body_start_idx, .None
 }
 
-_parse_req_line :: proc(buf: []u8) -> (method, path, version: string, err: Parse_Error) {
+_parse_req_line :: proc(
+	buf: []u8,
+) -> (
+	method: HTTP_Methods,
+	path, version: string,
+	err: Parse_Error,
+) {
 	sep_one := -1
 	sep_two := -1
 
@@ -93,10 +101,24 @@ _parse_req_line :: proc(buf: []u8) -> (method, path, version: string, err: Parse
 	}
 
 	if sep_one == -1 || sep_two == -1 {
-		return "", "", "", .Malformed
+		return .Invalid, "", "", .Malformed
 	}
 
-	method = string(buf[:sep_one])
+	method_str := string(buf[:sep_one])
+
+	switch method_str {
+	case "GET":
+		method = .GET
+	case "POST":
+		method = .POST
+	case "PUT":
+		method = .PUT
+	case "PATCH":
+		method = .PATCH
+	case:
+		return .Invalid, "", "", .Unsupported_Method
+	}
+
 	path = string(buf[sep_one + 1:sep_two])
 	version = string(buf[sep_two + 1:])
 
