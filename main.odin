@@ -3,7 +3,10 @@ package main
 import "core:fmt"
 import "core:net"
 import "core:strconv"
+import "core:time"
 import http "http"
+
+REQUEST_TIMEOUT :: 10 * time.Second
 
 /*
  ! TCP cycle (server side)
@@ -65,8 +68,8 @@ main :: proc() {
 		c_socket, source, a_err := net.accept_tcp(socket)
 
 		if a_err != .None {
-			fmt.printf("Accepting failed: %v", a_err)
-			panic("Listen err")
+			fmt.eprintfln("Accepting failed: %v", a_err)
+			continue
 		}
 
 		defer {
@@ -76,14 +79,36 @@ main :: proc() {
 
 		fmt.printfln("Client connected: %v:%v", source.address, source.port)
 
+		// Set a timeout to the client socket connection to prevent server holds.
+		if t_err := net.set_option(c_socket, .Receive_Timeout, REQUEST_TIMEOUT); t_err != .None {
+			fmt.eprintfln("Could not set the receive timeout: %v", t_err)
+			continue
+		}
+
 		accumulator: [8192]u8
-		bytes_read := http.read_req_head(c_socket, accumulator[:])
+		bytes_read, h_err := http.read_req_head(c_socket, accumulator[:])
+
+		if h_err != nil {
+			if problem, ok := h_err.(http.Read_Problem);
+			   ok && problem == .Client_Disconnected && bytes_read == 0 {
+				http.debugfln("Client closed before sending a request")
+			} else {
+				fmt.eprintfln("Failed to read the request head: %v", h_err)
+			}
+			continue
+		}
+
 		request_bytes := accumulator[:bytes_read]
 
-		request, body_start_idx, err := http.parse_http_req_head(request_bytes)
+		request, body_start_idx, p_err := http.parse_http_req_head(request_bytes)
 
-		if err != .None {
-			fmt.eprintfln("Error occured: %v", err)
+		// The parser allocates the headers map and nothing else owns it, so I have to free it
+		// before this iteration ends. Without this the map leakes memory per
+		// request for the lifetime of the process.
+		defer delete(request.headers)
+
+		if p_err != .None {
+			fmt.eprintfln("Error occured: %v", p_err)
 			continue
 		}
 
@@ -106,11 +131,13 @@ main :: proc() {
 			continue
 		}
 
-		if body_start_idx + c_length > len(accumulator) {
+		space_left := len(accumulator) - body_start_idx
+
+		if c_length > space_left {
 			fmt.eprintfln(
-				"Request too large: need %v bytes, buffer has %v",
-				body_start_idx + c_length,
-				len(accumulator),
+				"Request too large: body is %v bytes, buffer has %v left",
+				c_length,
+				space_left,
 			)
 			continue
 		}
@@ -131,7 +158,18 @@ main :: proc() {
 		}
 
 		if remaining > 0 {
-			extra_read := http.read_req_body(c_socket, accumulator[bytes_read:], remaining)
+			extra_read, b_err := http.read_req_body(c_socket, accumulator[bytes_read:], remaining)
+
+			if b_err != nil {
+				fmt.eprintfln(
+					"Failed to read the request body: %v (got %v of %v bytes)",
+					b_err,
+					extra_read,
+					remaining,
+				)
+				continue
+			}
+
 			http.debugfln("Additional body bytes read: %v", extra_read)
 		}
 
