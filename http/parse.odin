@@ -12,8 +12,6 @@ parse_http_req_head :: proc(
 
 	l := len(buf)
 
-	// fmt.printfln("Original buffer: %v\n", string(buf))
-
 	request_line_idx := -1
 
 	if l < 2 {return request, 0, .Malformed}
@@ -22,10 +20,10 @@ parse_http_req_head :: proc(
 	for i in 0 ..< l - 1 {
 		if buf[i] == '\r' && buf[i + 1] == '\n' {
 			request_line_bytes := buf[:i]
-			method, path, version, err := _parse_req_line(request_line_bytes)
+			method, path, version, line_err := _parse_req_line(request_line_bytes)
 
-			if err != .None {
-				return request, 0, err
+			if line_err != .None {
+				return request, 0, line_err
 			}
 
 			request.method = method
@@ -55,10 +53,10 @@ parse_http_req_head :: proc(
 	for i in request_headers_start_idx ..< l - 3 {
 		if buf[i] == '\r' && buf[i + 1] == '\n' && buf[i + 2] == '\r' && buf[i + 3] == '\n' {
 			request_headers_bytes := buf[request_headers_start_idx:i + 2]
-			headers, err := _parse_req_headers(request_headers_bytes)
+			headers, headers_err := _parse_req_headers(request_headers_bytes)
 
-			if err != .None {
-				return request, 0, err
+			if headers_err != .None {
+				return request, 0, headers_err
 			}
 
 			request.headers = headers
@@ -141,6 +139,7 @@ _parse_req_headers :: proc(buf: []u8) -> (map[string]string, Parse_Error) {
 
 			key, value, err := _parse_header_line(line)
 			if err != .None {
+				delete(headers)
 				return nil, err
 			}
 
