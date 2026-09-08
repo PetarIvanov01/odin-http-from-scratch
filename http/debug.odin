@@ -18,7 +18,10 @@ init_debug :: proc() -> bool {
 		return false
 	}
 
-	fmt.println("DEBUG MODE ON")
+	if config.debug {
+		fmt.println("DEBUG MODE ON")
+	}
+
 	return true
 }
 
