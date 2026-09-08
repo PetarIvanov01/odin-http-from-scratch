@@ -1,5 +1,19 @@
 package http
 
+import "core:net"
+
+Read_Error :: union {
+	Read_Problem,
+	net.TCP_Recv_Error,
+}
+
+Read_Problem :: enum {
+	Client_Disconnected,
+	Head_Too_Large,
+	Body_Truncated,
+	Body_Too_Large,
+}
+
 Parse_Error :: enum {
 	None,
 	Malformed,
