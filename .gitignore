@@ -1,0 +1,21 @@
+# Build output
+*.exe
+*.pdb
+*.ilk
+*.obj
+*.o
+*.lib
+*.a
+*.so
+*.dll
+*.dylib
+*.bin
+
+# Odin
+*.odin-doc
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
