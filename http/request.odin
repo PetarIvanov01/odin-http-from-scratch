@@ -1,0 +1,44 @@
+package http
+
+import "core:fmt"
+import "core:net"
+
+read_req :: proc(socket: net.TCP_Socket, accumulator: []u8) -> (bytes_used: int) {
+	used := 0
+
+	read: for {
+		chunk: [20]u8
+		c_sl := chunk[:]
+
+		bytes_read, r_err := net.recv_tcp(socket, c_sl)
+
+		if r_err != .None {
+			fmt.printf("Recv failed: %v", r_err)
+			panic("Recv err")
+		}
+
+		if used + bytes_read > len(accumulator) {
+			panic("Request too large")
+		}
+
+		copy(accumulator[used:used + bytes_read], chunk[:bytes_read])
+
+		used += bytes_read
+
+		fmt.printfln("Received chunk: %q", string(chunk[:bytes_read]))
+		fmt.printfln("Accumulated: %q", string(accumulator[:used]))
+
+		if used >= 4 {
+			for i in 0 ..< used - 3 {
+				if accumulator[i] == '\r' &&
+				   accumulator[i + 1] == '\n' &&
+				   accumulator[i + 2] == '\r' &&
+				   accumulator[i + 3] == '\n' {
+					break read
+				}
+			}
+		}
+	}
+
+	return used
+}
