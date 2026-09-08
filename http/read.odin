@@ -3,7 +3,7 @@ package http
 import "core:fmt"
 import "core:net"
 
-read_req :: proc(socket: net.TCP_Socket, accumulator: []u8) -> (bytes_used: int) {
+read_req_head :: proc(socket: net.TCP_Socket, accumulator: []u8) -> (bytes_used: int) {
 	used := 0
 
 	read: for {
@@ -40,3 +40,33 @@ read_req :: proc(socket: net.TCP_Socket, accumulator: []u8) -> (bytes_used: int)
 	return used
 }
 
+read_req_body :: proc(
+	socket: net.TCP_Socket,
+	accumulator: []u8,
+	bytes_needed: int,
+) -> (
+	bytes_used: int,
+) {
+	used := 0
+
+	for used < bytes_needed {
+
+		remaining := bytes_needed - used
+
+		bytes_read, r_err := net.recv_tcp(socket, accumulator[used:used + remaining])
+
+		if r_err != .None {
+			fmt.printf("Recv failed: %v", r_err)
+			panic("Recv err")
+		}
+
+		// Handles cases where the client disconnects before the full body is received.
+		if bytes_read == 0 {
+			break
+		}
+
+		used += bytes_read
+	}
+
+	return used
+}
