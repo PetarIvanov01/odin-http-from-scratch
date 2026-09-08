@@ -24,8 +24,7 @@ import http "http"
     5. recv/ send
     6. close when done
 
-    Note: the listening socket usually remains open and keeps accepting new connections.
-    `accept` gives the server a separete connected socket for a particular client.
+    Note: the listening socket usually remains open and keeps accepting new connections. `accept` gives the server a separete connected socket for a particular client.
   */
 
 main :: proc() {
@@ -59,7 +58,6 @@ main :: proc() {
 	fmt.println("Socket fd:", socket)
 
 	server: for {
-
 		c_socket, source, a_err := net.accept_tcp(socket)
 
 		if a_err != .None {
@@ -70,8 +68,16 @@ main :: proc() {
 		fmt.printfln("Client address:%v\nClient port:%v", source.address, source.port)
 
 		accumulator: [8192]u8
-		http.read_req(c_socket, accumulator[:])
+		bytes_read := http.read_req(c_socket, accumulator[:])
+		request_bytes := accumulator[:bytes_read]
 
+		request, err := http.parse_http_req(request_bytes)
+
+		if err != .None {
+			fmt.eprintfln("Error occured: %v", err)
+		}
+
+		fmt.printfln("Closing the socket handle: %v", c_socket)
 		net.close(c_socket)
 	}
 }
