@@ -112,6 +112,7 @@ server_loop :: proc(socket: net.TCP_Socket, router: ^http.Router) {
 				http.debugfln("Client closed before sending a request")
 			} else {
 				fmt.eprintfln("Failed to read the request head: %v", h_err)
+				http.send_error(c_socket, read_error_status(h_err))
 			}
 			continue
 		}
@@ -127,6 +128,12 @@ server_loop :: proc(socket: net.TCP_Socket, router: ^http.Router) {
 
 		if p_err != .None {
 			fmt.eprintfln("Error occured: %v", p_err)
+
+			if p_err == .Unsupported_Method {
+				http.send_error(c_socket, 501, "Not Implemented")
+			} else {
+				http.send_error(c_socket, 400, "Bad Request")
+			}
 			continue
 		}
 
@@ -138,23 +145,17 @@ server_loop :: proc(socket: net.TCP_Socket, router: ^http.Router) {
 
 			if !ok || c_length < 0 {
 				fmt.eprintfln("Content-Length Header has invalid value: %v", content_length_str)
+				http.send_error(c_socket, 400, "Bad Request")
 				continue
 			}
 
 			has_body = c_length > 0
 		}
 
-		if request.method != .GET &&
-		   request.method != .POST &&
-		   request.method != .PATCH &&
-		   request.method != .PUT &&
-		   request.method != .DELETE {
-			continue
-		}
-
 		if has_body {
 			if request.method == .GET {
 				// GET bodies are not supported by this server.
+				http.send_error(c_socket, 400, "Bad Request")
 				continue
 			}
 
@@ -169,30 +170,50 @@ server_loop :: proc(socket: net.TCP_Socket, router: ^http.Router) {
 			}
 		}
 
-		// TODO:  Find the rotue needed to be called
 		handler, found := http.find_route(router, request.method, request.path)
 
 		if !found {
-			// 404 response
+			http.send_error(c_socket, 404, "Not Found")
 			continue
 		}
 
 		response := http.Response{}
+		defer delete(response.headers)
+
 		handler(&request, &response)
 
-		buff, bytes_used := http.build_response(&response)
+		buff := http.build_response(&response)
 		defer delete(buff)
 
-		bytes_written, err := net.send_tcp(c_socket, buff[:bytes_used])
+		bytes_written, s_err := net.send_tcp(c_socket, buff)
 
-		if err != nil {
-			fmt.eprintfln("Error sending a response: %v", err)
+		if s_err != nil {
+			fmt.eprintfln("Error sending a response: %v", s_err)
 			continue
 		}
 
-		http.debugfln("Response bytes written: %v%v", bytes_written, bytes_used)
-		break
+		http.debugfln("Response bytes written: %v of %v", bytes_written, len(buff))
 	}
+}
+
+read_error_status :: proc(err: http.Read_Error) -> (status_code: int, reason: string) {
+	switch e in err {
+	case http.Read_Problem:
+		switch e {
+		case .Head_Too_Large:
+			return 431, "Request Header Fields Too Large"
+		case .Body_Too_Large:
+			return 413, "Content Too Large"
+		case .Body_Truncated, .Client_Disconnected:
+			return 400, "Bad Request"
+		}
+	case net.TCP_Recv_Error:
+		if e == .Timeout {
+			return 408, "Request Timeout"
+		}
+	}
+
+	return 400, "Bad Request"
 }
 
 handle_request_with_body :: proc(
@@ -205,12 +226,14 @@ handle_request_with_body :: proc(
 	content_length_str, ok := request.headers["Content-Length"]
 
 	if !ok {
+		http.send_error(c_socket, 400, "Bad Request")
 		return false
 	}
 
 	c_length, is_parsed := strconv.parse_int(content_length_str, 10)
 	if !is_parsed {
 		fmt.eprintfln("Content-Length Header has invalid value: %v", content_length_str)
+		http.send_error(c_socket, 400, "Bad Request")
 		return false
 	}
 
@@ -226,6 +249,7 @@ handle_request_with_body :: proc(
 			c_length,
 			space_left,
 		)
+		http.send_error(c_socket, 413, "Content Too Large")
 		return false
 	}
 
@@ -241,6 +265,7 @@ handle_request_with_body :: proc(
 
 	if remaining < 0 {
 		fmt.eprintfln("Invalid Content-Length: %v", content_length_str)
+		http.send_error(c_socket, 400, "Bad Request")
 		return false
 	}
 
@@ -254,6 +279,7 @@ handle_request_with_body :: proc(
 				extra_read,
 				remaining,
 			)
+			http.send_error(c_socket, read_error_status(b_err))
 			return false
 		}
 
