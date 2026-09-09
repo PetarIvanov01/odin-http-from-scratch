@@ -1,6 +1,6 @@
 package routes
 
-import http "http"
+import http "../http"
 
 ping_handler :: proc(req: ^http.Request, res: ^http.Response) {
 	res.status_code = 200
