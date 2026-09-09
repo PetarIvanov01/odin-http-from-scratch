@@ -113,6 +113,8 @@ _parse_req_line :: proc(
 		method = .PUT
 	case "PATCH":
 		method = .PATCH
+	case "DELETE":
+		method = .DELETE
 	case:
 		return .Invalid, "", "", .Unsupported_Method
 	}
