@@ -39,3 +39,11 @@ Request :: struct {
 	headers: map[string]string,
 	body:    []u8,
 }
+
+Response :: struct {
+ status_code: int,
+	reason: string,
+	headers: map[string]string,
+	body: string
+}
+
