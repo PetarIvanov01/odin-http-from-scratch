@@ -5,6 +5,7 @@ import "core:net"
 import "core:strconv"
 import "core:time"
 import http "http"
+import routes "routes"
 
 REQUEST_TIMEOUT :: 10 * time.Second
 
@@ -32,10 +33,22 @@ REQUEST_TIMEOUT :: 10 * time.Second
   */
 
 main :: proc() {
+
+	context.allocator = http.init_tracking_allocator()
+	defer http.report_tracked_leaks()
+
 	if !http.init_debug() {
 		return
 	}
 
+	router := http.init_router()
+	defer delete(router.routes)
+
+	http.add_route(&router, .POST, "/ping", routes.ping_handler)
+	start_server(&router)
+}
+
+start_server :: proc(router: ^http.Router) {
 	address: net.IP4_Address = {127, 0, 0, 1}
 	port: int = 3000
 	endpoint := net.Endpoint{address, port}
@@ -64,7 +77,12 @@ main :: proc() {
 	fmt.printfln("Listening on 127.0.0.1:3000")
 	http.debugfln("Socket fd: %v", socket)
 
-	server: for {
+	server_loop(socket, router)
+}
+
+server_loop :: proc(socket: net.TCP_Socket, router: ^http.Router) {
+
+	for {
 		c_socket, source, a_err := net.accept_tcp(socket)
 
 		if a_err != .None {
@@ -112,71 +130,140 @@ main :: proc() {
 			continue
 		}
 
-		if request.method != .POST && request.method != .PATCH && request.method != .PUT {
-			continue
-		}
+		has_body := false
+		content_length_str, has_content_l := request.headers["Content-Length"]
 
-		content_length_str, ok := request.headers["Content-Length"]
-		if !ok {
-			continue
-		}
+		if has_content_l {
+			c_length, ok := strconv.parse_int(content_length_str, 10)
 
-		c_length, is_parsed := strconv.parse_int(content_length_str, 10)
-		if !is_parsed {
-			fmt.eprintfln("Content-Length Header has invalid value: %v", content_length_str)
-			continue
-		}
-
-		if c_length <= 0 {
-			continue
-		}
-
-		space_left := len(accumulator) - body_start_idx
-
-		if c_length > space_left {
-			fmt.eprintfln(
-				"Request too large: body is %v bytes, buffer has %v left",
-				c_length,
-				space_left,
-			)
-			continue
-		}
-
-		http.debugfln("Total bytes after head read: %v", bytes_read)
-		http.debugfln("Body starts at index: %v", body_start_idx)
-		http.debugfln("Content-Length: %v", c_length)
-
-		already_have := bytes_read - body_start_idx
-		remaining := c_length - already_have
-
-		http.debugfln("Body bytes already received: %v", already_have)
-		http.debugfln("Body bytes remaining: %v", remaining)
-
-		if remaining < 0 {
-			fmt.eprintfln("Invalid Content-Length: %v", content_length_str)
-			continue
-		}
-
-		if remaining > 0 {
-			extra_read, b_err := http.read_req_body(c_socket, accumulator[bytes_read:], remaining)
-
-			if b_err != nil {
-				fmt.eprintfln(
-					"Failed to read the request body: %v (got %v of %v bytes)",
-					b_err,
-					extra_read,
-					remaining,
-				)
+			if !ok || c_length < 0 {
+				fmt.eprintfln("Content-Length Header has invalid value: %v", content_length_str)
 				continue
 			}
 
-			http.debugfln("Additional body bytes read: %v", extra_read)
+			has_body = c_length > 0
 		}
 
-		body_end := body_start_idx + c_length
-		request.body = accumulator[body_start_idx:body_end]
+		if request.method != .GET &&
+		   request.method != .POST &&
+		   request.method != .PATCH &&
+		   request.method != .PUT &&
+		   request.method != .DELETE {
+			continue
+		}
 
-		http.debugfln("Final body length: %v", len(request.body))
-		http.debugfln("Final body: %q", string(request.body))
+		if has_body {
+			if request.method == .GET {
+				// GET bodies are not supported by this server.
+				continue
+			}
+
+			if !handle_request_with_body(
+				c_socket,
+				&request,
+				accumulator[:],
+				bytes_read,
+				body_start_idx,
+			) {
+				continue
+			}
+		}
+
+		// TODO:  Find the rotue needed to be called
+		handler, found := http.find_handler(router, request.method, request.path)
+
+		if !found {
+			// 404 response
+			continue
+		}
+
+		response := http.Response{}
+		handler(&request, &response)
+
+		buff, bytes_used := http.build_response(&response)
+		defer delete(buff)
+
+		bytes_written, err := net.send_tcp(c_socket, buff[:bytes_used])
+
+		if err != nil {
+			fmt.eprintfln("Error sending a response: %v", err)
+			continue
+		}
+
+		http.debugfln("Response bytes written: %v%v", bytes_written, bytes_used)
 	}
+}
+
+handle_request_with_body :: proc(
+	c_socket: net.TCP_Socket,
+	request: ^http.Request,
+	accumulator: []u8,
+	bytes_read: int,
+	body_start_idx: int,
+) -> bool {
+	content_length_str, ok := request.headers["Content-Length"]
+
+	if !ok {
+		return false
+	}
+
+	c_length, is_parsed := strconv.parse_int(content_length_str, 10)
+	if !is_parsed {
+		fmt.eprintfln("Content-Length Header has invalid value: %v", content_length_str)
+		return false
+	}
+
+	if c_length <= 0 {
+		return true
+	}
+
+	space_left := len(accumulator) - body_start_idx
+
+	if c_length > space_left {
+		fmt.eprintfln(
+			"Request too large: body is %v bytes, buffer has %v left",
+			c_length,
+			space_left,
+		)
+		return false
+	}
+
+	http.debugfln("Total bytes after head read: %v", bytes_read)
+	http.debugfln("Body starts at index: %v", body_start_idx)
+	http.debugfln("Content-Length: %v", c_length)
+
+	already_have := bytes_read - body_start_idx
+	remaining := c_length - already_have
+
+	http.debugfln("Body bytes already received: %v", already_have)
+	http.debugfln("Body bytes remaining: %v", remaining)
+
+	if remaining < 0 {
+		fmt.eprintfln("Invalid Content-Length: %v", content_length_str)
+		return false
+	}
+
+	if remaining > 0 {
+		extra_read, b_err := http.read_req_body(c_socket, accumulator[bytes_read:], remaining)
+
+		if b_err != nil {
+			fmt.eprintfln(
+				"Failed to read the request body: %v (got %v of %v bytes)",
+				b_err,
+				extra_read,
+				remaining,
+			)
+			return false
+		}
+
+		http.debugfln("Additional body bytes read: %v", extra_read)
+	}
+
+	body_end := body_start_idx + c_length
+	request.body = accumulator[body_start_idx:body_end]
+
+	http.debugfln("Final body length: %v", len(request.body))
+	http.debugfln("Final body: %q", string(request.body))
+
+	return true
 }
