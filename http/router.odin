@@ -2,14 +2,13 @@ package http
 
 Handler :: #type proc(req: ^Request, res: ^Response)
 
-Route :: struct {
-	method:  HTTP_Methods,
-	path:    string,
-	handler: Handler,
+Route_Key :: struct {
+	method: HTTP_Methods,
+	path:   string,
 }
 
 Router :: struct {
-	routes: [dynamic]Route,
+	routes: map[Route_Key]Handler,
 }
 
 // Returns the Router by value.
@@ -17,11 +16,24 @@ Router :: struct {
 // is responsible for deleting router.routes when done.
 init_router :: proc() -> Router {
 	router: Router
-	router.routes = make([dynamic]Route)
+	router.routes = make(map[Route_Key]Handler)
 
 	return router
 }
 
 add_route :: proc(router: ^Router, method: HTTP_Methods, path: string, handler: Handler) {
-	append(&router.routes, Route{method = method, path = path, handler = handler})
+	router.routes[Route_Key{method = method, path = path}] = handler
+}
+
+find_route :: proc(
+	router: ^Router,
+	method: HTTP_Methods,
+	path: string,
+) -> (
+	handler: Handler,
+	found: bool,
+) {
+	handler = router.routes[Route_Key{method = method, path = path}] or_return
+  found = true
+  return
 }

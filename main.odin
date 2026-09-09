@@ -170,7 +170,7 @@ server_loop :: proc(socket: net.TCP_Socket, router: ^http.Router) {
 		}
 
 		// TODO:  Find the rotue needed to be called
-		handler, found := http.find_handler(router, request.method, request.path)
+		handler, found := http.find_route(router, request.method, request.path)
 
 		if !found {
 			// 404 response
@@ -191,6 +191,7 @@ server_loop :: proc(socket: net.TCP_Socket, router: ^http.Router) {
 		}
 
 		http.debugfln("Response bytes written: %v%v", bytes_written, bytes_used)
+		break
 	}
 }
 
