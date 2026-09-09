@@ -1,35 +1,50 @@
 package http
 
 import "core:fmt"
+import "core:net"
+import "core:strings"
 
-build_response :: proc(response: ^Response) -> (buffer: []u8, bytes_used: int) {
-	buffer = make([]u8, 8192)
-	bytes_used = 0
+build_response :: proc(response: ^Response) -> []u8 {
+	builder := strings.builder_make()
 
-	status_line := fmt.bprintf(
-		buffer[bytes_used:],
-		"HTTP/1.1 %v %s\r\n",
-		response.status_code,
-		response.reason,
-	)
+	fmt.sbprintf(&builder, "HTTP/1.1 %v %s\r\n", response.status_code, response.reason)
+	fmt.sbprintf(&builder, "Content-Length: %v\r\n", len(response.body))
+	fmt.sbprintf(&builder, "Connection: close\r\n")
 
-	bytes_used += len(status_line)
+	has_content_type := false
 
-	content_length := fmt.bprintf(
-		buffer[bytes_used:],
-		"Content-Length: %v\r\n",
-		len(response.body),
-	)
+	for key, value in response.headers {
+		if strings.equal_fold(key, "Content-Length") || strings.equal_fold(key, "Connection") {
+			continue
+		}
 
-	bytes_used += len(content_length)
+		if strings.equal_fold(key, "Content-Type") {
+			has_content_type = true
+		}
 
-	headers := fmt.bprintf(buffer[bytes_used:], "Content-Type: text/plain\r\n\r\n")
+		fmt.sbprintf(&builder, "%s: %s\r\n", key, value)
+	}
 
-	bytes_used += len(headers)
+	if !has_content_type {
+		fmt.sbprintf(&builder, "Content-Type: text/plain\r\n")
+	}
 
-	body := fmt.bprintf(buffer[bytes_used:], "%s", response.body)
+	fmt.sbprintf(&builder, "\r\n%s", response.body)
 
-	bytes_used += len(body)
+	return builder.buf[:]
+}
 
-	return buffer, bytes_used
+send_error :: proc(socket: net.TCP_Socket, status_code: int, reason: string) {
+	response := Response {
+		status_code = status_code,
+		reason      = reason,
+		body        = reason,
+	}
+
+	buffer := build_response(&response)
+	defer delete(buffer)
+
+	if _, err := net.send_tcp(socket, buffer); err != nil {
+		debugfln("Could not send the %v response: %v", status_code, err)
+	}
 }
