@@ -1,10 +1,11 @@
 package http
 
-import "core:net"
+import "core:nbio"
+import "core:thread"
 
 Read_Error :: union {
 	Read_Problem,
-	net.TCP_Recv_Error,
+	nbio.TCP_Recv_Error,
 }
 
 Read_Problem :: enum {
@@ -45,5 +46,25 @@ Response :: struct {
 	reason: string,
 	headers: map[string]string,
 	body: string
+}
+
+Connection :: struct {
+	loop:   ^nbio.Event_Loop,
+	socket: nbio.TCP_Socket,
+}
+
+Send_Context :: struct {
+	socket:          nbio.TCP_Socket,
+	response_buffer: []u8,
+}
+
+Work_Context :: struct {
+	router:  ^Router,
+	workers: ^thread.Pool,
+}
+
+Task_Context :: struct {
+	connection: Connection,
+	router:     ^Router,
 }
 
