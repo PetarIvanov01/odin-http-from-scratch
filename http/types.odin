@@ -5,7 +5,7 @@ import "core:thread"
 
 Read_Error :: union {
 	Read_Problem,
-	nbio.TCP_Recv_Error,
+	nbio.Recv_Error,
 }
 
 Read_Problem :: enum {
@@ -42,10 +42,10 @@ Request :: struct {
 }
 
 Response :: struct {
- status_code: int,
-	reason: string,
-	headers: map[string]string,
-	body: string
+	status_code: int,
+	reason:      string,
+	headers:     map[string]string,
+	body:        string,
 }
 
 Connection :: struct {
@@ -68,3 +68,14 @@ Task_Context :: struct {
 	router:     ^Router,
 }
 
+Read_Context :: struct {
+	socket:         nbio.TCP_Socket,
+	accumulator:    [8192]u8,
+	loop:           ^nbio.Event_Loop,
+	router:         ^Router,
+	used:           int,
+	scan_from:      int,
+	request:        Request,
+	body_start_idx: int,
+	content_length: int,
+}
