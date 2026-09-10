@@ -1,9 +1,12 @@
 package main
 
 import "core:fmt"
+import "core:nbio"
 import "core:net"
 import "core:strconv"
+import "core:thread"
 import "core:time"
+
 import http "http"
 import routes "routes"
 
@@ -45,15 +48,21 @@ main :: proc() {
 	defer delete(router.routes)
 
 	http.add_route(&router, .POST, "/ping", routes.ping_handler)
+
 	start_server(&router)
 }
 
 start_server :: proc(router: ^http.Router) {
-	address: net.IP4_Address = {127, 0, 0, 1}
-	port: int = 3000
-	endpoint := net.Endpoint{address, port}
 
-	socket, l_err := net.listen_tcp(endpoint)
+	workers: thread.Pool
+	thread.pool_init(&workers, context.allocator, 2)
+	thread.pool_start(&workers)
+
+	err := nbio.acquire_thread_event_loop()
+	defer nbio.release_thread_event_loop()
+
+	ep, _ := nbio.parse_endpoint("127.0.0.1:3000")
+	socket, l_err := nbio.listen_tcp(ep)
 
 	if l_err != nil {
 		#partial switch e in l_err {
@@ -74,33 +83,70 @@ start_server :: proc(router: ^http.Router) {
 			}
 		}
 	}
+
 	fmt.printfln("Listening on 127.0.0.1:3000")
 	http.debugfln("Socket fd: %v", socket)
 
-	server_loop(socket, router)
+	server_loop(socket, &workers, router)
 }
 
-server_loop :: proc(socket: net.TCP_Socket, router: ^http.Router) {
+server_loop :: proc(socket: nbio.TCP_Socket, workers: ^thread.Pool, router: ^http.Router) {
 
-	for {
-		c_socket, source, a_err := net.accept_tcp(socket)
+	work_context := http.Work_Context {
+		router  = router,
+		workers = workers,
+	}
 
-		if a_err != .None {
-			fmt.eprintfln("Accepting failed: %v", a_err)
-			continue
+	nbio.accept_poly(socket, &work_context, on_accept)
+	err := nbio.run()
+	assert(err == nil)
+
+	on_accept :: proc(op: ^nbio.Operation, work_context: ^http.Work_Context) {
+		err := op.accept.err
+		if err != .None {
+			fmt.eprintfln("Accepting failed: %v", err)
+			return
 		}
 
-		defer {
-			fmt.printfln("Closing the socket handle: %v", c_socket)
-			net.close(c_socket)
-		}
+		// Accept next connection
+		nbio.accept_poly(op.accept.socket, work_context, on_accept)
 
-		fmt.printfln("Client connected: %v:%v", source.address, source.port)
+		fmt.printfln(
+			"Client connected: %v:%v",
+			op.accept.client_endpoint.address,
+			op.accept.client_endpoint.port,
+		)
 
+		// Add the work to the worker
+		thread.pool_add_task(
+			work_context.workers,
+			context.allocator,
+			do_work,
+			new_clone(
+				http.Task_Context {
+					router = work_context.router,
+					connection = http.Connection{loop = op.l, socket = op.accept.client},
+				},
+			),
+		)
+	}
+
+	do_work :: proc(t: thread.Task) {
+		task_context := (^http.Task_Context)(t.data)
+		c_socket := task_context.connection.socket
+
+		// Do the work here
+		// time.sleep(time.Second * 5)
 		// Set a timeout to the client socket connection to prevent server holds.
-		if t_err := net.set_option(c_socket, .Receive_Timeout, REQUEST_TIMEOUT); t_err != .None {
+		if t_err := net.set_option(
+			task_context.connection.socket,
+			.Receive_Timeout,
+			REQUEST_TIMEOUT,
+		); t_err != .None {
 			fmt.eprintfln("Could not set the receive timeout: %v", t_err)
-			continue
+			nbio.close(c_socket)
+			free(task_context)
+			return
 		}
 
 		accumulator: [8192]u8
@@ -110,11 +156,18 @@ server_loop :: proc(socket: net.TCP_Socket, router: ^http.Router) {
 			if problem, ok := h_err.(http.Read_Problem);
 			   ok && problem == .Client_Disconnected && bytes_read == 0 {
 				http.debugfln("Client closed before sending a request")
-			} else {
-				fmt.eprintfln("Failed to read the request head: %v", h_err)
-				http.send_error(c_socket, read_error_status(h_err))
+
+				nbio.close(c_socket)
+				free(task_context)
+				return
 			}
-			continue
+
+			fmt.eprintfln("Failed to read the request head: %v", h_err)
+
+			http.send_error(c_socket, task_context.connection.loop, read_error_status(h_err))
+
+			free(task_context)
+			return
 		}
 
 		request_bytes := accumulator[:bytes_read]
@@ -130,11 +183,12 @@ server_loop :: proc(socket: net.TCP_Socket, router: ^http.Router) {
 			fmt.eprintfln("Error occured: %v", p_err)
 
 			if p_err == .Unsupported_Method {
-				http.send_error(c_socket, 501, "Not Implemented")
+				http.send_error(c_socket, task_context.connection.loop, 501, "Not Implemented")
 			} else {
-				http.send_error(c_socket, 400, "Bad Request")
+				http.send_error(c_socket, task_context.connection.loop, 400, "Bad Request")
 			}
-			continue
+			free(task_context)
+			return
 		}
 
 		has_body := false
@@ -145,8 +199,9 @@ server_loop :: proc(socket: net.TCP_Socket, router: ^http.Router) {
 
 			if !ok || c_length < 0 {
 				fmt.eprintfln("Content-Length Header has invalid value: %v", content_length_str)
-				http.send_error(c_socket, 400, "Bad Request")
-				continue
+				http.send_error(c_socket, task_context.connection.loop, 400, "Bad Request")
+				free(task_context)
+				return
 			}
 
 			has_body = c_length > 0
@@ -155,26 +210,30 @@ server_loop :: proc(socket: net.TCP_Socket, router: ^http.Router) {
 		if has_body {
 			if request.method == .GET {
 				// GET bodies are not supported by this server.
-				http.send_error(c_socket, 400, "Bad Request")
-				continue
+				http.send_error(c_socket, task_context.connection.loop, 400, "Bad Request")
+				free(task_context)
+				return
 			}
 
-			if !handle_request_with_body(
+			if err, code, reason := handle_request_with_body(
 				c_socket,
 				&request,
 				accumulator[:],
 				bytes_read,
 				body_start_idx,
-			) {
-				continue
+			); err {
+				http.send_error(c_socket, task_context.connection.loop, code, reason)
+				free(task_context)
+				return
 			}
 		}
 
-		handler, found := http.find_route(router, request.method, request.path)
+		handler, found := http.find_route(task_context.router, request.method, request.path)
 
 		if !found {
-			http.send_error(c_socket, 404, "Not Found")
-			continue
+			http.send_error(c_socket, task_context.connection.loop, 404, "Not Found")
+			free(task_context)
+			return
 		}
 
 		response := http.Response{}
@@ -182,19 +241,39 @@ server_loop :: proc(socket: net.TCP_Socket, router: ^http.Router) {
 
 		handler(&request, &response)
 
-		buff := http.build_response(&response)
-		defer delete(buff)
+		response_buffer := http.build_response(&response)
 
-		bytes_written, s_err := net.send_tcp(c_socket, buff)
+		send_context := new(http.Send_Context)
+		send_context.socket = task_context.connection.socket
+		send_context.response_buffer = response_buffer
 
-		if s_err != nil {
-			fmt.eprintfln("Error sending a response: %v", s_err)
-			continue
+		loop := task_context.connection.loop
+
+		free(task_context)
+
+		nbio.send_poly(
+			send_context.socket,
+			{transmute([]byte)send_context.response_buffer},
+			send_context,
+			on_sent,
+			l = loop,
+		)
+	}
+
+	on_sent :: proc(op: ^nbio.Operation, send_context: ^http.Send_Context) {
+		if op.send.err != nil {
+			fmt.eprintfln("Error sending a response: %v", op.send.err)
 		}
 
-		http.debugfln("Response bytes written: %v of %v", bytes_written, len(buff))
+		http.debugfln("Response send completed: %v bytes", len(send_context.response_buffer))
+		fmt.printfln("Closing the socket handle: %v", send_context.socket)
+
+		delete(send_context.response_buffer)
+		nbio.close(send_context.socket)
+		free(send_context)
 	}
 }
+
 
 read_error_status :: proc(err: http.Read_Error) -> (status_code: int, reason: string) {
 	switch e in err {
@@ -207,7 +286,7 @@ read_error_status :: proc(err: http.Read_Error) -> (status_code: int, reason: st
 		case .Body_Truncated, .Client_Disconnected:
 			return 400, "Bad Request"
 		}
-	case net.TCP_Recv_Error:
+	case nbio.TCP_Recv_Error:
 		if e == .Timeout {
 			return 408, "Request Timeout"
 		}
@@ -217,28 +296,30 @@ read_error_status :: proc(err: http.Read_Error) -> (status_code: int, reason: st
 }
 
 handle_request_with_body :: proc(
-	c_socket: net.TCP_Socket,
+	c_socket: nbio.TCP_Socket,
 	request: ^http.Request,
 	accumulator: []u8,
 	bytes_read: int,
 	body_start_idx: int,
-) -> bool {
+) -> (
+	err: bool,
+	code: int,
+	reason: string,
+) {
 	content_length_str, ok := request.headers["Content-Length"]
 
 	if !ok {
-		http.send_error(c_socket, 400, "Bad Request")
-		return false
+		return true, 400, "Bad Request"
 	}
 
 	c_length, is_parsed := strconv.parse_int(content_length_str, 10)
 	if !is_parsed {
 		fmt.eprintfln("Content-Length Header has invalid value: %v", content_length_str)
-		http.send_error(c_socket, 400, "Bad Request")
-		return false
+		return true, 400, "Bad Request"
 	}
 
 	if c_length <= 0 {
-		return true
+		return false, 0, ""
 	}
 
 	space_left := len(accumulator) - body_start_idx
@@ -249,8 +330,7 @@ handle_request_with_body :: proc(
 			c_length,
 			space_left,
 		)
-		http.send_error(c_socket, 413, "Content Too Large")
-		return false
+		return true, 413, "Content Too Large"
 	}
 
 	http.debugfln("Total bytes after head read: %v", bytes_read)
@@ -265,8 +345,7 @@ handle_request_with_body :: proc(
 
 	if remaining < 0 {
 		fmt.eprintfln("Invalid Content-Length: %v", content_length_str)
-		http.send_error(c_socket, 400, "Bad Request")
-		return false
+		return true, 400, "Bad Request"
 	}
 
 	if remaining > 0 {
@@ -279,8 +358,7 @@ handle_request_with_body :: proc(
 				extra_read,
 				remaining,
 			)
-			http.send_error(c_socket, read_error_status(b_err))
-			return false
+			return true, read_error_status(b_err)
 		}
 
 		http.debugfln("Additional body bytes read: %v", extra_read)
@@ -292,5 +370,5 @@ handle_request_with_body :: proc(
 	http.debugfln("Final body length: %v", len(request.body))
 	http.debugfln("Final body: %q", string(request.body))
 
-	return true
+	return false, 0, ""
 }
