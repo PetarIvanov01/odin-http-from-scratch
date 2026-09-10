@@ -1,7 +1,7 @@
 package http
 
 import "core:fmt"
-import "core:net"
+import "core:nbio"
 import "core:strings"
 
 build_response :: proc(response: ^Response) -> []u8 {
@@ -34,17 +34,33 @@ build_response :: proc(response: ^Response) -> []u8 {
 	return builder.buf[:]
 }
 
-send_error :: proc(socket: net.TCP_Socket, status_code: int, reason: string) {
+send_error :: proc(
+	socket: nbio.TCP_Socket,
+	loop: ^nbio.Event_Loop,
+	status_code: int,
+	reason: string,
+) {
 	response := Response {
 		status_code = status_code,
 		reason      = reason,
 		body        = reason,
 	}
 
-	buffer := build_response(&response)
-	defer delete(buffer)
+	response_buffer := build_response(&response)
 
-	if _, err := net.send_tcp(socket, buffer); err != nil {
-		debugfln("Could not send the %v response: %v", status_code, err)
+	send_context := new(Send_Context)
+	send_context.socket = socket
+	send_context.response_buffer = response_buffer
+
+	nbio.send_poly(socket, {transmute([]byte)response_buffer}, send_context, on_sent, l = loop)
+}
+
+on_sent :: proc(op: ^nbio.Operation, send_context: ^Send_Context) {
+	if op.send.err != nil {
+		debugfln("Could not send response: %v", op.send.err)
 	}
+
+	delete(send_context.response_buffer)
+	nbio.close(send_context.socket)
+	free(send_context)
 }
