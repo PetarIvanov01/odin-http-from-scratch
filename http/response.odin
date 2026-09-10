@@ -52,7 +52,7 @@ send_error :: proc(
 	send_context.socket = socket
 	send_context.response_buffer = response_buffer
 
-	nbio.send_poly(socket, {transmute([]byte)response_buffer}, send_context, on_sent, l = loop)
+	nbio.send_poly(socket, {response_buffer}, send_context, on_sent, l = loop)
 }
 
 on_sent :: proc(op: ^nbio.Operation, send_context: ^Send_Context) {
