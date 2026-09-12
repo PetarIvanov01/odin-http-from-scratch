@@ -21,8 +21,12 @@ init_router :: proc() -> Router {
 	return router
 }
 
-add_route :: proc(router: ^Router, method: HTTP_Methods, path: string, handler: Handler) {
-	router.routes[Route_Key{method = method, path = path}] = handler
+get :: proc(router: ^Router, path: string, handler: Handler) {
+	_add_route(router, .GET, path, handler)
+}
+
+post :: proc(router: ^Router, path: string, handler: Handler) {
+	_add_route(router, .POST, path, handler)
 }
 
 find_route :: proc(
@@ -34,6 +38,10 @@ find_route :: proc(
 	found: bool,
 ) {
 	handler = router.routes[Route_Key{method = method, path = path}] or_return
-  found = true
-  return
+	found = true
+	return
+}
+
+_add_route :: proc(router: ^Router, method: HTTP_Methods, path: string, handler: Handler) {
+	router.routes[Route_Key{method = method, path = path}] = handler
 }

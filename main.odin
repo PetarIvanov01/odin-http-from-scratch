@@ -20,15 +20,18 @@ main :: proc() {
 	router := http.init_router()
 	defer delete(router.routes)
 
-	http.add_route(&router, .POST, "/ping", routes.ping_handler)
+	http.get(&router, "/pong", routes.pong_handler)
+	http.post(&router, "/ping", routes.ping_handler)
 
 	start_server(&router)
 }
 
+THREAD_COUNT :: 8
+
 start_server :: proc(router: ^http.Router) {
 
 	workers: thread.Pool
-	thread.pool_init(&workers, context.allocator, 2)
+	thread.pool_init(&workers, context.allocator, THREAD_COUNT)
 	thread.pool_start(&workers)
 
 	err := nbio.acquire_thread_event_loop()
