@@ -65,4 +65,3 @@ debugfln :: proc(format: string, args: ..any) {
 
 	fmt.printfln(format, ..args)
 }
-
