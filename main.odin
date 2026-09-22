@@ -93,31 +93,13 @@ server_loop :: proc(socket: nbio.TCP_Socket, workers: ^thread.Pool, router: ^htt
 			op.accept.client_endpoint.port,
 		)
 
-		// Add the work to the worker
-		thread.pool_add_task(
-			work_context.workers,
-			context.allocator,
-			do_work,
-			new_clone(
-				http.Task_Context {
-					router = work_context.router,
-					connection = http.Connection{loop = op.l, socket = op.accept.client},
-				},
-			),
-		)
-	}
-
-	do_work :: proc(t: thread.Task) {
-		task_context := (^http.Task_Context)(t.data)
-
 		read_context := new(http.Read_Context)
-		read_context.loop = task_context.connection.loop
-		read_context.socket = task_context.connection.socket
-		read_context.router = task_context.router
+		read_context.loop = op.l
+		read_context.socket = op.accept.client
+		read_context.router = work_context.router
+		read_context.workers = work_context.workers
 
-		free(task_context)
-
-		http.read_req_head(read_context)
+		http.recv_request_head(read_context)
 	}
 
 	on_sent :: proc(op: ^nbio.Operation, send_context: ^http.Send_Context) {

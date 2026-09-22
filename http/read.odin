@@ -3,12 +3,13 @@ package http
 import "core:fmt"
 import "core:nbio"
 import "core:strconv"
+import "core:thread"
 import "core:time"
 
 REQUEST_TIMEOUT :: 10 * time.Second
 
-// 1 to invoke
-read_req_head :: proc(ctx: ^Read_Context) {
+// Begin async receiving an HTTP request head
+recv_request_head :: proc(ctx: ^Read_Context) {
 	if ctx.used == len(ctx.accumulator) {
 		send_error(ctx.socket, ctx.loop, 431, "Request Header Fields Too Large")
 
@@ -16,6 +17,7 @@ read_req_head :: proc(ctx: ^Read_Context) {
 		return
 	}
 
+	// Schedule an async receive on the connections event loop.
 	nbio.recv_poly(
 		ctx.socket,
 		{ctx.accumulator[ctx.used:]},
@@ -56,7 +58,12 @@ read_req_head :: proc(ctx: ^Read_Context) {
 				   ctx.accumulator[i + 2] == '\r' &&
 				   ctx.accumulator[i + 3] == '\n' {
 
-					handle_complete_head(ctx)
+					/*
+					 The complete header has been received.
+					 Move HTTP parsing and request proecsing off the event-loop
+					 thread and onto a worker thread.
+					*/
+					thread.pool_add_task(ctx.workers, context.allocator, request_head_task, ctx)
 					return
 				}
 			}
@@ -80,10 +87,15 @@ read_req_head :: proc(ctx: ^Read_Context) {
 			l = ctx.loop,
 		)
 	}
-
 }
 
-read_req_body :: proc(ctx: ^Read_Context) {
+// Worker pool entry point for processing a complete request head.
+request_head_task :: proc(t: thread.Task) {
+	ctx := (^Read_Context)(t.data)
+	process_request_head(ctx)
+}
+
+recv_request_body :: proc(ctx: ^Read_Context) {
 	body_end := ctx.body_start_idx + ctx.content_length
 
 	if body_end > len(ctx.accumulator) {
@@ -95,10 +107,14 @@ read_req_body :: proc(ctx: ^Read_Context) {
 	}
 
 	if ctx.used >= body_end {
-		handle_complete_body(ctx)
+		// The body was already received along with the request head.
+		// We are already on a worker thread, so conttinue processing here.
+		process_request_body(ctx)
 		return
 	}
 
+	// The full body was not received with the request head.
+	// This schedules the remaining body receive on the connection event loop
 	nbio.recv_poly(
 		ctx.socket,
 		{ctx.accumulator[ctx.used:body_end]},
@@ -131,8 +147,12 @@ read_req_body :: proc(ctx: ^Read_Context) {
 
 		body_end := ctx.body_start_idx + ctx.content_length
 
+		/*
+		The body is complete. Move processing back to the worker pool so parsing/routing and handler
+		work does not run on the event-loop thread.
+		*/
 		if ctx.used >= body_end {
-			handle_complete_body(ctx)
+			thread.pool_add_task(ctx.workers, context.allocator, request_body_task, ctx)
 			return
 		}
 
@@ -147,8 +167,14 @@ read_req_body :: proc(ctx: ^Read_Context) {
 	}
 }
 
-// 2nd to invoke
-handle_complete_head :: proc(ctx: ^Read_Context) {
+// Worker pool entry point after the complete request body has arrived.
+request_body_task :: proc(t: thread.Task) {
+	ctx := (^Read_Context)(t.data)
+	process_request_body(ctx)
+}
+
+// (worker) processing after a complete HTTP request head is available.
+process_request_head :: proc(ctx: ^Read_Context) {
 	request_bytes := ctx.accumulator[:ctx.used]
 
 	request, body_start_idx, p_err := parse_http_req_head(request_bytes)
@@ -196,8 +222,7 @@ handle_complete_head :: proc(ctx: ^Read_Context) {
 			return
 		}
 
-		// Continue the body async part
-		read_req_body(ctx)
+		recv_request_body(ctx)
 		return
 	}
 
@@ -208,12 +233,12 @@ handle_complete_head :: proc(ctx: ^Read_Context) {
 		body_start_idx,
 	)
 
-	handle_complete_request(ctx)
+	dispatch_request(ctx)
 	return
 }
 
-// 3rd to invoke
-handle_complete_body :: proc(ctx: ^Read_Context) {
+// (worker) processing after a complete request body is available.
+process_request_body :: proc(ctx: ^Read_Context) {
 	body_end := ctx.body_start_idx + ctx.content_length
 
 	ctx.request.body = ctx.accumulator[ctx.body_start_idx:body_end]
@@ -221,12 +246,12 @@ handle_complete_body :: proc(ctx: ^Read_Context) {
 	debugfln("Final body length: %v", len(ctx.request.body))
 	debugfln("Final body: %q", string(ctx.request.body))
 
-	handle_complete_request(ctx)
+	dispatch_request(ctx)
 }
 
-// 4th to invoke
-handle_complete_request :: proc(ctx: ^Read_Context) {
-
+// Route the complete request, call handler, build response, and submit
+// the response send to the connections event loop.
+dispatch_request :: proc(ctx: ^Read_Context) {
 	handler, found := find_route(ctx.router, ctx.request.method, ctx.request.path)
 
 	if !found {
