@@ -56,8 +56,8 @@ odin run .              # add -- -debug for verbose logging
 ## Try it
 
 ```sh
-curl -X POST http://127.0.0.1:3000/ping     # 200 Pong
-curl http://127.0.0.1:3000/ping             # 404, wrong method
+curl -X POST http://127.0.0.1:8080/ping     # 200 Pong
+curl http://127.0.0.1:8080/ping             # 404, wrong method
 ```
 
 Register more routes in `main`:

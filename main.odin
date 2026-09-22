@@ -8,13 +8,18 @@ import "core:thread"
 import http "http"
 import routes "routes"
 
+BENCHMARK :: #config(BENCHMARK, false)
+
 main :: proc() {
+	when !BENCHMARK {
+		context.allocator = http.init_tracking_allocator()
+		defer http.report_tracked_leaks()
+	}
 
-	context.allocator = http.init_tracking_allocator()
-	defer http.report_tracked_leaks()
-
-	if !http.init_debug() {
-		return
+	when !BENCHMARK {
+		if !http.init_debug() {
+			return
+		}
 	}
 
 	router := http.init_router()
@@ -27,6 +32,7 @@ main :: proc() {
 }
 
 THREAD_COUNT :: 8
+SERVER_ADDRESS :: "127.0.0.1:8080"
 
 start_server :: proc(router: ^http.Router) {
 
@@ -37,7 +43,7 @@ start_server :: proc(router: ^http.Router) {
 	err := nbio.acquire_thread_event_loop()
 	defer nbio.release_thread_event_loop()
 
-	ep, _ := nbio.parse_endpoint("127.0.0.1:3000")
+	ep, _ := nbio.parse_endpoint(SERVER_ADDRESS)
 	socket, l_err := nbio.listen_tcp(ep)
 
 	if l_err != nil {
@@ -60,7 +66,7 @@ start_server :: proc(router: ^http.Router) {
 		}
 	}
 
-	fmt.printfln("Listening on 127.0.0.1:3000")
+	fmt.printfln("Listening on %s", SERVER_ADDRESS)
 	http.debugfln("Socket fd: %v", socket)
 
 	server_loop(socket, &workers, router)
@@ -78,20 +84,21 @@ server_loop :: proc(socket: nbio.TCP_Socket, workers: ^thread.Pool, router: ^htt
 	assert(err == nil)
 
 	on_accept :: proc(op: ^nbio.Operation, work_context: ^http.Work_Context) {
+		nbio.accept_poly(op.accept.socket, work_context, on_accept)
+
 		err := op.accept.err
 		if err != .None {
 			fmt.eprintfln("Accepting failed: %v", err)
 			return
 		}
 
-		// Accept next connection
-		nbio.accept_poly(op.accept.socket, work_context, on_accept)
-
-		fmt.printfln(
-			"Client connected: %v:%v",
-			op.accept.client_endpoint.address,
-			op.accept.client_endpoint.port,
-		)
+		when !BENCHMARK {
+			fmt.printfln(
+				"Client connected: %v:%v",
+				op.accept.client_endpoint.address,
+				op.accept.client_endpoint.port,
+			)
+		}
 
 		// Add the work to the worker
 		thread.pool_add_task(

@@ -1,7 +1,5 @@
 package http
 
-import "core:fmt"
-
 parse_http_req_head :: proc(
 	buf: []u8,
 ) -> (
@@ -39,7 +37,7 @@ parse_http_req_head :: proc(
 		return request, 0, .Request_Line_Not_Found
 	}
 
-	fmt.printfln(
+	debugfln(
 		"Request line was parsed:\n  method: %v\n  path: %v\n  version: %v",
 		request.method,
 		request.path,
@@ -182,9 +180,9 @@ _parse_header_line :: proc(line: []u8) -> (key, value: string, err: Parse_Error)
 }
 
 _print_headers :: proc(headers: map[string]string) {
-	fmt.printfln("Request headers were parsed:")
+	debugfln("Request headers were parsed:")
 
 	for key, value in headers {
-		fmt.printfln("%v: %v", key, value)
+		debugfln("%v: %v", key, value)
 	}
 }
