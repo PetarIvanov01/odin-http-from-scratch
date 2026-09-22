@@ -2,5 +2,6 @@
 *.exe
 *.pdb
 
-# Test output
-tests/
+# Benchmark output
+comparisons/empty-ok-all/bin/
+comparisons/empty-ok-all/rust/target/

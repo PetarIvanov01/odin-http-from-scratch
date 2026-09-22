@@ -251,7 +251,6 @@ handle_complete_request :: proc(ctx: ^Read_Context) {
 	free(ctx)
 
 	nbio.send_poly(
-
 		send_context.socket,
 		{send_context.response_buffer},
 		send_context,
