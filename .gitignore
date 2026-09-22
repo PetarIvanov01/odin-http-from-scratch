@@ -3,5 +3,4 @@
 *.pdb
 
 # Benchmark output
-comparisons/empty-ok-all/bin/
-comparisons/empty-ok-all/rust/target/
+comparisons

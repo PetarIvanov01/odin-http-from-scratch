@@ -1,6 +1,6 @@
 package main
 
-import "core:fmt"
+import "core:log"
 import "core:nbio"
 import "core:net"
 import "core:thread"
@@ -8,14 +8,16 @@ import "core:thread"
 import http "http"
 import routes "routes"
 
+ENABLE_DEBUG :: #config(ENABLE_DEBUG, false)
+
 main :: proc() {
-
-	context.allocator = http.init_tracking_allocator()
-	defer http.report_tracked_leaks()
-
-	if !http.init_debug() {
-		return
+	logger_level := log.Level.Info
+	when ENABLE_DEBUG {
+		logger_level = log.Level.Debug
 	}
+
+	context.logger = log.create_console_logger(logger_level)
+	defer log.destroy_console_logger(context.logger)
 
 	router := http.init_router()
 	defer delete(router.routes)
@@ -27,6 +29,7 @@ main :: proc() {
 }
 
 THREAD_COUNT :: 8
+SERVER_ADDRESS :: "127.0.0.1:8080"
 
 start_server :: proc(router: ^http.Router) {
 
@@ -37,31 +40,28 @@ start_server :: proc(router: ^http.Router) {
 	err := nbio.acquire_thread_event_loop()
 	defer nbio.release_thread_event_loop()
 
-	ep, _ := nbio.parse_endpoint("127.0.0.1:3000")
+	ep, _ := nbio.parse_endpoint(SERVER_ADDRESS)
 	socket, l_err := nbio.listen_tcp(ep)
 
 	if l_err != nil {
 		#partial switch e in l_err {
 		case net.Create_Socket_Error:
 			if e != .None {
-				fmt.printf("Socket creation failed: %v", e)
-				panic("Socket err")
+				log.panicf("Socket creation failed: %v", e)
 			}
 		case net.Bind_Error:
 			if e != .None {
-				fmt.printf("Bind failed: %v", e)
-				panic("Bind err")
+				log.panicf("Bind failed: %v", e)
 			}
 		case net.Listen_Error:
 			if e != .None {
-				fmt.printf("Listening failed: %v", e)
-				panic("Listen err")
+				log.panicf("Listening failed: %v", e)
 			}
 		}
 	}
 
-	fmt.printfln("Listening on 127.0.0.1:3000")
-	http.debugfln("Socket fd: %v", socket)
+	log.debugf("Socket fd: %v", socket)
+	log.infof("Listening on %s", SERVER_ADDRESS)
 
 	server_loop(socket, &workers, router)
 }
@@ -83,13 +83,13 @@ server_loop :: proc(socket: nbio.TCP_Socket, workers: ^thread.Pool, router: ^htt
 
 		err := op.accept.err
 		if err != .None {
-			fmt.eprintfln("Accepting failed: %v", err)
+			log.debugf("Accepting failed: %v", err)
 			return
 		}
 
 		drain_completed_worker_tasks(work_context.workers)
 
-		fmt.printfln(
+		log.debugf(
 			"Client connected: %v:%v",
 			op.accept.client_endpoint.address,
 			op.accept.client_endpoint.port,
@@ -106,11 +106,11 @@ server_loop :: proc(socket: nbio.TCP_Socket, workers: ^thread.Pool, router: ^htt
 
 	on_sent :: proc(op: ^nbio.Operation, send_context: ^http.Send_Context) {
 		if op.send.err != nil {
-			fmt.eprintfln("Error sending a response: %v", op.send.err)
+			log.debugf("Error sending a response: %v", op.send.err)
 		}
 
-		http.debugfln("Response send completed: %v bytes", len(send_context.response_buffer))
-		fmt.printfln("Closing the socket handle: %v", send_context.socket)
+		log.debugf("Response send completed: %v bytes", len(send_context.response_buffer))
+		log.debugf("Closing the socket handle: %v", send_context.socket)
 
 		delete(send_context.response_buffer)
 		nbio.close(send_context.socket)

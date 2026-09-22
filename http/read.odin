@@ -1,6 +1,6 @@
 package http
 
-import "core:fmt"
+import "core:log"
 import "core:nbio"
 import "core:strconv"
 import "core:thread"
@@ -32,14 +32,14 @@ recv_request_head :: proc(ctx: ^Read_Context) {
 		r_err := op.recv.err
 
 		if r_err != nil {
-			fmt.eprintfln("Failed to read the request head: %v", r_err)
+			log.debugf("Failed to read the request head: %v", r_err)
 			send_error(ctx.socket, ctx.loop, read_error_status(r_err))
 			free(ctx)
 			return
 		}
 
 		if bytes_read == 0 {
-			debugfln("Client closed before sending a request")
+			log.debug("Client closed before sending a request")
 
 			nbio.close(ctx.socket)
 			free(ctx)
@@ -126,7 +126,7 @@ recv_request_body :: proc(ctx: ^Read_Context) {
 
 	on_body_recv :: proc(op: ^nbio.Operation, ctx: ^Read_Context) {
 		if op.recv.err != nil {
-			fmt.eprintfln("Failed to read request body: %v", op.recv.err)
+			log.debugf("Failed to read request body: %v", op.recv.err)
 
 			send_error(ctx.socket, ctx.loop, read_error_status(op.recv.err))
 
@@ -201,7 +201,7 @@ process_request_head :: proc(ctx: ^Read_Context) {
 		c_length, ok := strconv.parse_int(content_length_str, 10)
 
 		if !ok || c_length < 0 {
-			fmt.eprintfln("Content-Length Header has invalid value: %v", content_length_str)
+			log.debugf("Content-Length Header has invalid value: %v", content_length_str)
 
 			delete(request.headers)
 			send_error(ctx.socket, ctx.loop, 400, "Bad Request")
@@ -226,7 +226,7 @@ process_request_head :: proc(ctx: ^Read_Context) {
 		return
 	}
 
-	debugfln(
+	log.debugf(
 		"Parsed request: method=%v path=%v body_start=%v",
 		request.method,
 		request.path,
@@ -243,8 +243,8 @@ process_request_body :: proc(ctx: ^Read_Context) {
 
 	ctx.request.body = ctx.accumulator[ctx.body_start_idx:body_end]
 
-	debugfln("Final body length: %v", len(ctx.request.body))
-	debugfln("Final body: %q", string(ctx.request.body))
+	log.debugf("Final body length: %v", len(ctx.request.body))
+	log.debugf("Final body: %q", string(ctx.request.body))
 
 	dispatch_request(ctx)
 }

@@ -1,6 +1,8 @@
 package http
 
-import "core:fmt"
+import "core:log"
+
+ENABLE_DEBUG :: #config(ENABLE_DEBUG, false)
 
 parse_http_req_head :: proc(
 	buf: []u8,
@@ -39,7 +41,7 @@ parse_http_req_head :: proc(
 		return request, 0, .Request_Line_Not_Found
 	}
 
-	fmt.printfln(
+	log.debugf(
 		"Request line was parsed:\n  method: %v\n  path: %v\n  version: %v",
 		request.method,
 		request.path,
@@ -70,7 +72,9 @@ parse_http_req_head :: proc(
 		return request, 0, .Request_Headers_Not_Found
 	}
 
-	_print_headers(request.headers)
+	when ENABLE_DEBUG {
+		_print_headers(request.headers)
+	}
 
 	return request, body_start_idx, .None
 }
@@ -181,10 +185,13 @@ _parse_header_line :: proc(line: []u8) -> (key, value: string, err: Parse_Error)
 	return key, value, .None
 }
 
-_print_headers :: proc(headers: map[string]string) {
-	fmt.printfln("Request headers were parsed:")
 
-	for key, value in headers {
-		fmt.printfln("%v: %v", key, value)
+when ENABLE_DEBUG {
+	_print_headers :: proc(headers: map[string]string) {
+		log.debugf("Request headers were parsed:")
+
+		for key, value in headers {
+			log.debugf("%v: %v", key, value)
+		}
 	}
 }

@@ -1,6 +1,7 @@
 package http
 
 import "core:fmt"
+import "core:log"
 import "core:nbio"
 import "core:strings"
 
@@ -57,7 +58,7 @@ send_error :: proc(
 
 on_sent :: proc(op: ^nbio.Operation, send_context: ^Send_Context) {
 	if op.send.err != nil {
-		debugfln("Could not send response: %v", op.send.err)
+		log.debugf("Could not send response: %v", op.send.err)
 	}
 
 	delete(send_context.response_buffer)
