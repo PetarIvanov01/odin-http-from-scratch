@@ -78,14 +78,16 @@ server_loop :: proc(socket: nbio.TCP_Socket, workers: ^thread.Pool, router: ^htt
 	assert(err == nil)
 
 	on_accept :: proc(op: ^nbio.Operation, work_context: ^http.Work_Context) {
+		// Accept next connection
+		nbio.accept_poly(op.accept.socket, work_context, on_accept)
+
 		err := op.accept.err
 		if err != .None {
 			fmt.eprintfln("Accepting failed: %v", err)
 			return
 		}
 
-		// Accept next connection
-		nbio.accept_poly(op.accept.socket, work_context, on_accept)
+		drain_completed_worker_tasks(work_context.workers)
 
 		fmt.printfln(
 			"Client connected: %v:%v",
@@ -113,5 +115,14 @@ server_loop :: proc(socket: nbio.TCP_Socket, workers: ^thread.Pool, router: ^htt
 		delete(send_context.response_buffer)
 		nbio.close(send_context.socket)
 		free(send_context)
+	}
+}
+
+drain_completed_worker_tasks :: proc(workers: ^thread.Pool) {
+	for {
+		_, ok := thread.pool_pop_done(workers)
+		if !ok {
+			break
+		}
 	}
 }
