@@ -43,7 +43,7 @@ Debug logging is disabled by default. I enable it at compile time when I want
 to inspect connections, requests, headers, and completed sends:
 
 ```sh
-odin run . -define:ENABLE_DEBUG=true
+odin run . -debug
 ```
 
 ## Try it

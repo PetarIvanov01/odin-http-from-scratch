@@ -2,8 +2,6 @@ package http
 
 import "core:log"
 
-ENABLE_DEBUG :: #config(ENABLE_DEBUG, false)
-
 parse_http_req_head :: proc(
 	buf: []u8,
 ) -> (
@@ -72,7 +70,7 @@ parse_http_req_head :: proc(
 		return request, 0, .Request_Headers_Not_Found
 	}
 
-	when ENABLE_DEBUG {
+	when ODIN_DEBUG {
 		_print_headers(request.headers)
 	}
 
@@ -186,7 +184,7 @@ _parse_header_line :: proc(line: []u8) -> (key, value: string, err: Parse_Error)
 }
 
 
-when ENABLE_DEBUG {
+when ODIN_DEBUG {
 	_print_headers :: proc(headers: map[string]string) {
 		log.debugf("Request headers were parsed:")
 

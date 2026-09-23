@@ -8,11 +8,9 @@ import "core:thread"
 import http "http"
 import routes "routes"
 
-ENABLE_DEBUG :: #config(ENABLE_DEBUG, false)
-
 main :: proc() {
 	logger_level := log.Level.Info
-	when ENABLE_DEBUG {
+	when ODIN_DEBUG {
 		logger_level = log.Level.Debug
 	}
 
